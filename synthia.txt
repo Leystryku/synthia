@@ -1,0 +1,1058 @@
+//#define GAME_DLL
+#define WIN32_LEAN_AND_MEAN
+#define CLIENT_DLL
+
+#pragma comment (lib, "mathlib.lib")
+#pragma comment (lib, "psapi.lib" )
+#pragma comment (lib, "User32.lib")
+#pragma comment (linker, "/NODEFAULTLIB:LIBCMT")
+#pragma warning (disable : 4099 4075 4996)
+
+
+#include <string>
+#include <sstream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <iostream>
+#include <windows.h>
+#include <Color.h>
+#include <tlhelp32.h>
+#include <psapi.h>
+
+#include <cbase.h>
+#include <eiface.h>
+#include <convar.h>
+#include <cdll_int.h>
+#include <tier1/tier1.h>
+#include <tier2/tier2.h>
+#include <tier3/tier3.h>
+#include <vstdlib\cvar.h>
+#include <tier0/dbg.h>
+#include <conio.h>
+#include <winlite.h>
+#include <usercmd.h>
+#include <inetchannel.h>
+#include <inetchannelinfo.h>
+#include <bitbuf.h>
+#include <cliententitylist.h>
+#include <cdll_util.h>
+#include <in_main.h>
+#include <fx_line.h>
+#include <input.h>
+#include <igameresources.h>
+#include <VGuiMatSurface\IMatSystemSurface.h>
+#include <c_baseanimating.h>
+#include <iclientrenderable.h>
+#include "ivmodelrender.h"
+#include "vfnhook.h"
+
+#define NET_MESSAGE_BITS 6
+
+#define IN_ATTACK		(1<<0)
+#define IN_JUMP			(1<<1)
+#define IN_DUCK			(1<<2)
+#define IN_FORWARD		(1<<3)
+#define IN_BACK			(1<<4)
+#define IN_USE			(1<<5)
+#define IN_CANCEL		(1<<6)
+#define IN_LEFT			(1<<7)
+#define IN_RIGHT		(1<<8)
+#define IN_MOVELEFT		(1<<9)
+#define IN_MOVERIGHT		(1<<10)
+#define IN_ATTACK2		(1<<11)
+#define IN_RUN			(1<<12)
+#define IN_RELOAD		(1<<13)
+#define IN_ALT1			(1<<14)
+#define IN_SCORE		(1<<15)
+
+
+IBaseClientDLL *clientdll = NULL;
+IVEngineClient *enginecl = NULL;
+IVRenderView *m_pRender = NULL;
+CInput *g_pInput = NULL;
+IVModelInfo *g_pModelInfo = NULL;
+IMaterialSystem *aMaterialSystem = NULL;
+IVModelRender *modelrender = NULL;
+IClientEntityList* g_pEntList = NULL;
+
+CGlobalVarsBase *g_pGlobals = NULL;
+CVMTHookManager* g_pClientHook = NULL;
+
+class CVerifiedUserCmd
+{
+public:
+	CUserCmd	m_cmd;
+	CRC32_t		m_crc;
+};
+
+class IMotionSensor
+{
+};
+
+class IGet
+{
+public:
+	void (__stdcall *GameDir)( void );
+	void (__stdcall *IsDedicatedServer)( void );
+	void (__stdcall *FileSystem)( void );
+	void (__stdcall *LuaShared)( void );
+	void (__stdcall *MenuSystem)( void );
+	void (__stdcall *Resources)( void );
+	void (__stdcall *IntroScreen)( void );
+	void (__stdcall *Materials)( void );
+	void (__stdcall *HTML)( void );
+	void (__stdcall *SteamHTTP)( void );
+	void (__stdcall *SteamRemoteStorage)( void );
+	void (__stdcall *SteamUtils)( void );
+	void (__stdcall *SteamApps)( void );
+	void (__stdcall *SteamScreenshots)( void );
+	void (__stdcall *SteamUser)( void );
+	void (__stdcall *SteamFriends)( void );
+	void (__stdcall *Initialize)( IFileSystem *);
+	void (__stdcall *ShutDown)( void );
+	void (__stdcall *RunSteamCallbacks)( void );
+	void (__stdcall *SetMotionSensor)( IMotionSensor *);
+	void (__stdcall *MotionSensor)( void );
+};
+
+struct CClient
+{
+
+	// Called once when the client DLL is loaded
+	//int(__stdcall *Init)(void * (*)(char  const*,int *),void * (*)(char  const*,int *),CGlobalVarsBase *,IGet *)
+	int(__stdcall *Init)( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physicsFactory,	CGlobalVarsBase *pGlobals, IGet *);
+
+	void (__stdcall *PostInit)( );
+
+	void (__stdcall *ReplayInit)( char  const*, int * );
+	void (__stdcall *ReplayPostInit)(void);
+
+	// Called once when the client DLL is being unloaded
+	void (__stdcall *Shutdown)( void );
+
+	// Called at the start of each level change
+	void (__stdcall *LevelInitPreEntity)( char const* pMapName );
+	// Called at the start of a new level, after the entities have been received and created
+	void (__stdcall *LevelInitPostEntity)( );
+	// Called at the end of a level
+	void (__stdcall *LevelShutdown)( void );
+
+	// Request a pointer to the list of client datatable classes
+	ClientClass *(__stdcall *GetAllClasses)( void ); //6
+
+	// Called once per level to re-initialize any hud element drawing stuff
+	int(__stdcall *HudVidInit)( void );
+	// Called by the engine when gathering user input
+	void (__stdcall *HudProcessInput)( bool bActive );
+	// Called oncer per frame to allow the hud elements to think
+	void (__stdcall *HudUpdate)( bool bActive ); //9
+	// Reset the hud elements to their initial states
+	void (__stdcall *HudReset)( void );
+	// Display a hud text message
+	void (__stdcall *HudText)( const char * message );
+
+	// Mouse Input Interfaces
+	// Activate the mouse (hides the cursor and locks it to the center of the screen)
+	void (__stdcall *IN_ActivateMouse)( void );
+	// Deactivates the mouse (shows the cursor and unlocks it)
+	void (__stdcall *IN_DeactivateMouse)( void );
+	// This is only called during extra sound updates and just accumulates mouse x, y offets and recenters the mouse.
+	//  This call is used to try to prevent the mouse from appearing out of the side of a windowed version of the engine if 
+	//  rendering or other processing is taking too long
+	void (__stdcall *IN_Accumulate) (void);
+	// Reset all key and mouse states to their initial, unpressed state
+	void (__stdcall *IN_ClearStates )(void);
+	// If key is found by name, returns whether it's being held down in isdown, otherwise function returns false
+	bool (__stdcall *IN_OnMouseWheeled)( int );
+
+	bool (__stdcall *IN_IsKeyDown)( const char *name, bool& isdown );
+	// Raw keyboard signal, if the client .dll returns 1, the engine processes the key as usual, otherwise,
+	//  if the client .dll returns 0, the key is swallowed.
+	int(__stdcall *IN_KeyEvent)( int eventcode, int keynum, const char *pszCurrentBinding ); //17
+
+	// This function is called once per tick to create the player CUserCmd (used for prediction/physics simulation of the player)
+	// Because the mouse can be sampled at greater than the tick interval, there is a separate input_sample_frametime, which
+	//  specifies how much additional mouse / keyboard simulation to perform.
+	void (__stdcall *CreateMove )( 
+		int sequence_number,			// sequence_number of this cmd
+		float input_sample_frametime,	// Frametime for mouse input sampling
+		bool active );// True if the player is active (not paused) //18
+
+	// If the game is running faster than the tick_interval framerate, then we do extra mouse sampling to avoid jittery input
+	//  This code path is much like the normal move creation code, except no move is created
+	void (__stdcall *ExtraMouseSample)( float frametime, bool active );
+
+	// Encode the delta (changes) between the CUserCmd in slot from vs the one in slot to.  The game code will have
+	//  matching logic to read the delta.
+	bool (__stdcall *WriteUsercmdDeltaToBuffer)( bf_write *buf, int from, int to, bool isnewcommand ); //20
+	// Demos need to be able to encode/decode CUserCmds to memory buffers, so these functions wrap that
+	void (__stdcall *EncodeUserCmdToBuffer)( bf_write& buf, int slot ); //21
+	void (__stdcall *DecodeUserCmdFromBuffer)( bf_read& buf, int slot ); //22
+
+	// Set up and render one or more views (e.g., rear view window, etc.).  This called into RenderView below
+	void (__stdcall *View_Render)( vrect_t *rect );
+
+	// Allow engine to expressly render a view (e.g., during timerefresh)
+	// See IVRenderView.h, PushViewFlags_t for nFlags values
+	void (__stdcall *RenderView)( const CViewSetup &view, int nClearFlags, int whatToDraw );
+
+	// Apply screen fade directly from engine
+	void (__stdcall *View_Fade)( ScreenFade_t *pSF );
+
+	// The engine has parsed a crosshair angle message, this function is called to dispatch the new crosshair angle
+	void (__stdcall *SetCrosshairAngle)( const QAngle& angle ); //26 
+
+	// Sprite (.spr) model handling code
+	// Load a .spr file by name
+	void (__stdcall *InitSprite)( CEngineSprite *pSprite, const char *loadname );
+	// Shutdown a .spr file
+	void (__stdcall *ShutdownSprite)( CEngineSprite *pSprite );
+	// Returns sizeof)( CEngineSprite ) so the engine can allocate appropriate memory
+	int(__stdcall *GetSpriteSize)( void );
+
+	// Called when a player starts or stops talking.
+	// entindex is -1 to represent the local client talking (before the data comes back from the server). 
+	// entindex is -2 to represent the local client's voice being acked by the server.
+	// entindex is GetPlayer() when the server acknowledges that the local client is talking.
+	void (__stdcall *VoiceStatus)( int entindex, qboolean bTalking );
+
+	// Networked string table definitions have arrived, allow client .dll to 
+	//  hook string changes with a callback function )( see INetworkStringTableClient.h )
+	void (__stdcall *InstallStringTableCallback)( char const *tableName );
+
+	// Notification that we're moving into another stage during the frame.
+	void (__stdcall *FrameStageNotify)( ClientFrameStage_t curStage ); //32
+
+	// The engine has received the specified user message, this code is used to dispatch the message handler
+	bool (__stdcall *DispatchUserMessage)( int msg_type, bf_read &msg_data ); //33
+
+	// Save/restore system hooks
+	CSaveRestoreData  *(__stdcall *SaveInit)( int size );
+	void (__stdcall *SaveWriteFields)( CSaveRestoreData *, const char *, void *, datamap_t *, typedescription_t *, int );
+	void (__stdcall *SaveReadFields)( CSaveRestoreData *, const char *, void *, datamap_t *, typedescription_t *, int );
+	void (__stdcall *PreSave)( CSaveRestoreData * );
+	void (__stdcall *Save)( CSaveRestoreData * );
+	void (__stdcall *WriteSaveHeaders)( CSaveRestoreData * );
+	void (__stdcall *ReadRestoreHeaders)( CSaveRestoreData * );
+	void (__stdcall *Restore)( CSaveRestoreData *, bool );
+	void (__stdcall *DispatchOnRestore)();
+
+	// Hand over the StandardRecvProxies in the client DLL's module.
+	CStandardRecvProxies *(__stdcall *GetStandardRecvProxies)();
+
+	// save game screenshot writing
+	void (__stdcall *WriteSaveGameScreenshot)( const char *pFilename );
+
+	// Given a list of "S(wavname) S(wavname2)" tokens, look up the localized text and emit
+	//  the appropriate close caption if running with closecaption = 1
+	void (__stdcall *EmitSentenceCloseCaption)( char const *tokenstream );
+	// Emits a regular close caption by token name
+	void (__stdcall *EmitCloseCaption)( char const *captionname, float duration );
+
+	// Returns true if the client can start recording a demo now.  If the client returns false,
+	// an error message of up to length bytes should be returned in errorMsg.
+	bool (__stdcall *CanRecordDemo)( char *errorMsg, int length );
+	void (__stdcall OnDemoRecordStart)(char  const*);
+	void (__stdcall OnDemoRecordStop)(void);
+	void (__stdcall OnDemoPlaybackStart)(char  const*);
+	void (__stdcall OnDemoPlaybackStop)(void);
+
+	void (__stdcall ShouldDrawDropdownConsole)(void);
+	void (__stdcall GetScreenWidth)(void);
+	void (__stdcall GetScreenHeight)(void);
+
+	// save game screenshot writing
+	void (__stdcall *WriteSaveGameScreenshotOfSize)( const char *pFilename, int width, int height );
+
+	// Gets the current view
+	bool (__stdcall *GetPlayerView)( CViewSetup &playerView );
+
+	// Matchmaking
+	void (__stdcall *SetupGameProperties)(  );
+	uint (__stdcall *GetPresenceID)( const char *pIDName );
+	const char *(__stdcall *GetPropertyIdString)( const uint id );
+	void (__stdcall *GetPropertyDisplayString)( uint id, uint value, char *pOutput, int nBytes );
+	void (__stdcall *InvalidateMdlCache)( void );
+	void (__stdcall *IN_SetSampleTime)( float frametime );
+
+	void (__stdcall *ReloadFilesInList)(IFileList *);
+
+	/*#ifdef _WIN32
+		void (__stdcall *StartStatsReporting)( HANDLE handle, bool bArbitrated );  ??
+	#endif*/
+
+
+	void (__stdcall *StartStatsReporting)(void *,bool);
+	void (__stdcall *HandleUiToggle)(void);
+	void (__stdcall *ShouldAllowConsole)(void);
+	void (__stdcall *GetRenamedRecvTableInfos)(void);
+
+	void (__stdcall *GetClientUIMouthInfo)(void);
+	void (__stdcall *FileReceived)(char  const*,uint);
+	void (__stdcall *TranslateEffectForVisionFilter)(char  const*,char  const*);
+	void (__stdcall *ClientAdjustStartSoundParams)(void);
+	//void (__stdcall *ClientAdjustStartSoundParams)(StartSoundParams_t &);
+	void (__stdcall *DisconnectAttempt)(void);
+	void (__stdcall *GMOD_ReceiveServerMessage)(bf_read *,int);
+	void (__stdcall *GMOD_DoSnapshots)(void);
+	void (__stdcall *GMOD_VoiceVolume)(uint,float);
+	void (__stdcall *GMOD_OnDrawSkybox)(void);
+	void (__stdcall *IN_MouseWheelAnalog)(int);
+
+	
+};
+
+const char *sourceChars = "abcdefghijklmnopqrstuvwxyz123456789";
+int scLen = strlen( sourceChars );
+
+IGet *gGet = NULL;
+
+
+extern CClient gClient;
+CClient gClient;
+
+using namespace std;
+
+C_BaseCombatWeapon *pWeapon = NULL;
+C_BaseEntity *pPlayer = NULL;
+
+SpewOutputFunc_t 	OldSpew = NULL;
+int r;
+
+HANDLE hOut, hIn;
+
+CreateInterfaceFn g_AppSysFactory = NULL;
+
+bool Synthia_WallHackBool = false;
+
+
+char *randomString( int maxLen )
+{
+	int len = rand() % maxLen + 1;
+	char *retVal = (char *) malloc( len + 1 );
+	int i;
+
+	for (i=0; i<len; ++i) 
+		retVal[i] = sourceChars[ rand() % scLen ];
+
+	retVal[len] = '\0';
+	return retVal;
+}
+
+bool IsGameOverlayOpen()
+{
+	return (GetCursorPos(NULL) == TRUE);
+}
+
+
+
+
+void WriteInConsole( const char *fmt, ... )
+{
+
+	va_list marker;
+	char msg[4096];
+
+
+	va_start(marker, fmt);
+	Q_vsnprintf( msg, sizeof( msg ), fmt, marker );
+	va_end(marker);
+
+	WriteConsole( hOut, msg, strlen( msg ), (LPDWORD)&r, 0); 
+
+
+}
+
+
+int Red, Green, Blue, Alpha = 0;
+
+
+SpewRetval_t NewSpew(SpewType_t Type, const char *pMsg) {
+	
+	if ( !pMsg || Type == SPEW_ABORT )
+	{
+		return OldSpew(Type, pMsg);
+	}
+
+	/*Color tempColor = GetSpewOutputColor();
+	tempColor.GetColor(Red,Green,Blue,Alpha);
+	SetConsoleTextAttribute(screen, ?); gotta someone make it except rgba colors.*/
+	
+
+	stringstream spMsg;
+	spMsg << pMsg;
+	spMsg << "\n";
+
+	WriteInConsole( spMsg.str().c_str() );
+
+	return OldSpew(Type, pMsg);
+
+}
+
+
+bool Bhop = false;
+int Speedhack = 1;
+
+const char *cvarspoofprefix = "";
+
+void Synthia_int_ConVar( ConVar* pCvar, const char* origCvarName, const char* defaultValue, int origFlags)
+{
+
+	ConVar* pNewVar = (ConVar*)malloc( sizeof ConVar );
+
+	memcpy( pNewVar, pCvar,sizeof( ConVar ));
+	pNewVar->m_pNext = 0;
+	g_pCVar->RegisterConCommand( pNewVar );
+	pCvar->m_pszName = new char[50];
+	
+	char tmp[50];
+	Q_snprintf(tmp, sizeof(tmp), "_%s_%s", cvarspoofprefix, origCvarName);
+
+	strcpy((char*)pCvar->m_pszName, tmp);
+	pCvar->m_nFlags = FCVAR_NONE;
+
+	new ConVar(origCvarName, defaultValue, origFlags, "");
+
+	g_pCVar->RegisterConCommand( g_pCVar->FindVar(origCvarName) );
+
+}
+
+
+
+void Synthia_About( )
+{
+	WriteInConsole("\n\n\n");
+	WriteInConsole("About Synthia:\n\n");
+	WriteInConsole("Syntha is a Framework of helpful tools for source-games.\n");
+	WriteInConsole("It was created by Leystryku.\n\n");
+
+	WriteInConsole("Commands:\n\n");
+	WriteInConsole("sa_about - Gives you information about Synthia.\n");
+	WriteInConsole("sa_convar - Enables disabled ConVars.\n");
+	WriteInConsole("sa_name - Allows you to change your name.\n\n");
+	WriteInConsole("sa_bhop - Allows you to bhop in-game\n");
+	WriteInConsole("sa_wallhack - Self explanatory.\n");
+	WriteInConsole("\n\n\n");
+
+}
+
+void Synthia_ConVar( const char *convar )
+{
+
+	ConVar* pCvar = g_pCVar->FindVar( convar );
+
+	if (!pCvar)
+	{
+		WriteInConsole("[Synthia] Could not find cvar %s !\n", convar);
+		return;
+	}
+
+	Synthia_int_ConVar( pCvar, pCvar->GetName(), pCvar->m_pszDefaultValue, pCvar->m_nFlags );
+
+}
+
+void Synthia_Name( const char *name )
+{
+
+	if ( !enginecl->IsConnected() )
+		return;
+
+	INetChannel *ch = (INetChannel*)enginecl->GetNetChannelInfo();
+
+	char pckBuf[256];
+	bf_write pck( pckBuf, sizeof( pckBuf ) );
+	
+
+	pck.WriteUBitLong( 5, NET_MESSAGE_BITS );
+	pck.WriteByte( 0x01 );
+	pck.WriteString( "name" );
+	pck.WriteString( name );
+	
+	ch->SendData( pck );
+
+}
+
+void Synthia_Disconnect( const char *msg )
+{
+
+	if ( !enginecl->IsConnected() )
+		return;
+
+	INetChannel *ch = (INetChannel*)enginecl->GetNetChannelInfo();
+
+	char pckBuf[256];
+	bf_write pck( pckBuf, sizeof( pckBuf ) );
+
+
+	pck.WriteUBitLong( 1, NET_MESSAGE_BITS );
+	pck.WriteByte( 0x01 );
+	pck.WriteString( msg );
+
+	ch->SendData( pck );
+
+}
+
+void Synthia_Speedhack( int speed )
+{
+	
+	if ( speed == 0 )
+	{
+		WriteInConsole( "Speed needs to be higher than 1." );
+		
+		return;
+	}
+
+	Speedhack = speed;
+
+}
+
+void Synthia_Wallhack()
+{
+	Synthia_WallHackBool = !Synthia_WallHackBool;
+
+}
+
+bool bDataCompare(const BYTE* pData, const BYTE* bMask, const char* szMask)
+{
+	for(;*szMask;++szMask,++pData,++bMask)
+		if(*szMask=='x' && *pData!=*bMask )
+			return false;
+	return (*szMask) == NULL;
+}
+DWORD dwFindPattern(DWORD dwAddress,DWORD dwLen,BYTE *bMask,char * szMask)
+{
+	for(DWORD i=0; i < dwLen; i++)
+	{
+		if( bDataCompare( (BYTE*)( dwAddress+i ),bMask,szMask) )
+			return (DWORD)(dwAddress+i);
+	}
+	return 0;
+}
+
+void DumpVTable(const char* name, const char* modulename, void *object)
+{
+        MODULEINFO mi;
+        memset(&mi, 0, sizeof(MODULEINFO));
+
+        GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(modulename), &mi, sizeof(MODULEINFO));       
+
+        void ***mem = (void ***)object;
+        size_t base = (size_t)mi.lpBaseOfDll;
+        size_t imgsz = (size_t)mi.SizeOfImage;
+        size_t dlloffsetbase = 0x10000000;
+
+        WriteInConsole("Dumping %s VTable @ dlloffset %p:\n", name, (void *)((size_t)(*mem) - base + dlloffsetbase));
+
+        for(int i = 0; (size_t)(*mem)[i] - base < imgsz; i++)
+        {
+                WriteInConsole("\tindex=%d addr=%p dlloffset=%p\n", i, (*mem)[i], (void *)((size_t)(*mem)[i] - base + dlloffsetbase));
+        }
+        
+        WriteInConsole("\n");
+}
+
+/*
+int __stdcall nDrawModel( int flags, IClientRenderable *cliententity, ModelInstanceHandle_t instance, int entity_index, const model_t *model, Vector const& origin, QAngle const& angles, int skin, int body, int hitboxset, const matrix3x4_t *modelToWorld, const matrix3x4_t *pLightingOffset )
+{
+
+	MessageBox( NULL, "NIGG", "DAT SHIT IS WoKRNIG MAYNE", MB_OK);
+
+	
+	DrawModel( flags, cliententity, instance, entity_index, model, origin, angles, skin, body, hitboxset, modelToWorld, pLightingOffset );
+
+
+	if ( !enginecl->IsConnected() )
+	{
+		return 0;
+	}
+
+	CBaseEntity* pBaseEnt = pClientEntityList->GetClientEntity( entity_index  )->GetBaseEntity();
+
+	if( pBaseEnt->IsPlayer() && pBaseEnt->IsAlive() && pBaseEnt->index != enginecl->GetLocalPlayer() )
+	{
+		IMaterial *mat = NULL;
+
+		g_pModelInfo->GetModelMaterials( model, 1, &mat );
+		
+
+		const char *pMaterialName = mat->GetName();
+
+		MessageBox(NULL, pMaterialName, "[Synthia] Setting flags for it", MB_OK);
+
+		mat->SetMaterialVarFlag(MATERIAL_VAR_IGNOREZ, Synthia_WallHackBool);
+		mat->SetMaterialVarFlag(MATERIAL_VAR_ZNEARER, Synthia_WallHackBool);
+
+		MessageBox(NULL, pMaterialName, "[Synthia] Set flags for it", MB_OK);
+	}
+
+	return 0;
+}
+*/
+
+void DrawLine( )
+{
+	/*
+	if ( pPlayer == NULL )
+		return;
+
+	if ( pPlayer->GetActiveWeapon() == NULL )
+		return;
+
+	C_BaseCombatWeapon *pWeapon = pPlayer->GetActiveWeapon();
+
+	if ( pWeapon == NULL )
+		return;
+
+	IMaterial *pMaterial = aMaterialSystem->FindMaterial("sprites/laserbeam", "Other textures");
+
+	color32 clr;
+	clr.r = 0;
+	clr.g = 255;
+	clr.b = 0;
+	clr.a = 255;
+
+	//if(pMaterial)
+		//FX_DrawLine(pWeapon->GetAbsOrigin(), pWeapon->GetAbsOrigin() * 8192, 5, pMaterial, clr);
+*/
+}
+
+
+void ourhud( )
+{
+
+	//DrawLine( );
+
+
+}
+
+void Aimbawt( CUserCmd *cmd )
+{
+
+
+}
+
+int getOffsetToVariable( char *szClassName, char *szVariable )
+{
+    ClientClass *pClass = gClient.GetAllClasses();
+
+    for( ; pClass; pClass = pClass->m_pNext )
+    {
+        RecvTable *pTable = pClass->m_pRecvTable;
+
+        if( pTable->GetNumProps() <= 1 ) continue;
+
+		//gBaseAPI.log( "-- %s", pClass->GetName());
+		
+        for(int i = 0; i < pTable->GetNumProps(); i++)
+        {
+            RecvProp *pProp = pTable->GetProp( i );
+
+			pProp->GetDataTable();
+
+			//gBaseAPI.log( "-- --> %s [0x%.8X] [%i]", pProp->GetName(), pProp->GetOffset(), pProp->GetNumElements());
+
+            if( !pProp ) continue;
+
+			
+
+            if((!Q_strcmp( pTable->GetName(), szClassName ) || !Q_strcmp((char *)pTable->m_pNetTableName, szClassName))
+                && !Q_strcmp( pProp->GetName(), szVariable ) )
+            {
+                return pProp->GetOffset();
+            }
+        }
+    }
+    return 0;
+} 
+
+
+
+void __stdcall nCreateMove( int sequence_number, float input_sample_frametime, bool active )
+{
+
+	g_pClientHook->UnHook();
+	gClient.CreateMove( sequence_number, input_sample_frametime, active );
+	g_pClientHook->ReHook();
+
+	ourhud();
+
+    CUserCmd *cmd = g_pInput->GetUserCmd( sequence_number );
+
+	CInput::CVerifiedUserCmd *g_pVerifiedCommands = *(CInput::CVerifiedUserCmd**)( (DWORD)g_pInput + 0xB8 );
+
+    if ( !g_pVerifiedCommands )
+        return;
+ 
+    CInput::CVerifiedUserCmd *pVerified = &g_pVerifiedCommands[ sequence_number % MULTIPLAYER_BACKUP ];
+
+	if ( cmd == NULL )
+	{
+		MessageBox( NULL, "nocmd", "a", MB_OK );
+		return;
+	}
+
+
+	if ( Bhop )
+	{
+		if( !IsGameOverlayOpen() && ( cmd->buttons & IN_JUMP ) )
+		{
+				int iFlags = static_cast<C_BasePlayer*>(g_pEntList->GetClientEntity(enginecl->GetLocalPlayer()))->GetFlags();
+
+				if( !(iFlags & FL_ONGROUND) )
+					cmd->buttons &= ~IN_JUMP;
+		}
+	}
+
+    pVerified->m_cmd = *cmd;
+    pVerified->m_crc =  cmd->GetChecksum();
+
+}
+
+std::string formatString( PCHAR fmt, ... )
+{
+	char buf[1024];
+	memset( buf, 0, 1024 );
+
+	va_list va_alist;
+	va_start( va_alist, fmt );
+	_vsnprintf( buf + strlen( buf ), sizeof( buf ) - strlen( buf ), fmt, va_alist );
+	va_end( va_alist );
+
+	return buf;
+}
+
+std::string getDirectory( HMODULE module )
+{
+	char path[255], drive[255], dir[255];
+	
+	GetModuleFileNameA( module, path, 260 );
+	_splitpath( path, drive, dir, 0, 0 );
+
+	return formatString( "%s%s", drive, dir );
+}
+
+std::wstring stringToWide( const std::string& text )
+{
+	std::wstring wide( text.length(), L' ' );
+	std::copy( text.begin(), text.end(), wide.begin() );
+
+	return wide;
+}
+
+void* getInterface( CreateInterfaceFn* fn, PCHAR name )
+{
+	void* ptr = 0;
+
+	for( int i = 0; i < 100; ++i )
+	{
+		PCHAR fmt = ( i < 10 ) ? "%s00%d" : "%s0%d"; // i hope they dont go over 99
+			
+		ptr = ( *fn )( formatString( fmt, name, i ).c_str(), 0 );
+		if( ptr ) break;
+	}
+
+	return ptr;
+}
+
+UINT oldcp;
+int InitializeL( )
+{
+	if ( g_AppSysFactory == NULL )
+		Sleep(10);
+
+	ThreadSleep(5000);
+
+	HMODULE hModuleClient = NULL;
+
+	while(!GetModuleHandle("client.dll"))
+	{
+		Sleep(10);
+	}
+
+	hModuleClient = GetModuleHandle("client.dll");
+
+	CreateInterfaceFn ClientFactory	= (CreateInterfaceFn)GetProcAddress(hModuleClient, "CreateInterface");
+
+	ConnectTier1Libraries( &g_AppSysFactory, 1 );
+	ConnectTier2Libraries( &g_AppSysFactory, 1 );
+	ConnectTier3Libraries( &g_AppSysFactory, 1 );
+
+	g_pCVar = (ICvar*)getInterface( &g_AppSysFactory, "VEngineCvar" );
+	enginecl = ( IVEngineClient* )getInterface( &g_AppSysFactory, "VEngineClient" );
+	g_pModelInfo = ( IVModelInfoClient* )getInterface( &g_AppSysFactory, "VModelInfoClient" );
+	clientdll = ( IBaseClientDLL* )getInterface( &g_AppSysFactory, "VClient" );;
+	g_pEntList = ( IClientEntityList* )getInterface( &ClientFactory, "VEngineClient" );
+	modelrender = (IVModelRender*)getInterface( &g_AppSysFactory, "VEngineModel" );
+	aMaterialSystem = (IMaterialSystem *)getInterface( &g_AppSysFactory, "VMaterialSystem" );
+
+	DWORD dwInputPointer = dwFindPattern((DWORD)gClient.CreateMove, 0x100, (PBYTE)"\x8B\x0D", "xx" ); //Find the pointer to CInput in CHLClient::CreateMove.
+	
+	if ( dwInputPointer != NULL )
+	{
+		dwInputPointer += 0x2;
+		g_pInput = **( CInput*** )dwInputPointer; //A pointer within a pointer. Pointerception.
+	}else{
+
+		MessageBox(NULL, "g_pInput is NULL !", "Synthia", MB_OK);
+    }
+
+
+	if ( enginecl == NULL )
+	{
+		MessageBox(NULL, "Could not get client engine !", "Synthia", MB_OK);
+
+		return 0;
+	}
+
+	if ( g_pCVar == NULL )
+	{
+		MessageBox(NULL, "Could not get g_pCVar !", "Synthia", MB_OK);
+
+		return 0;
+	}
+
+	if ( g_pModelInfo == NULL )
+	{
+		MessageBox( NULL, "Could not get g_pModelInfo !", "Synthia", MB_OK);
+
+		return 0;
+	}
+
+	if ( aMaterialSystem == NULL )
+	{
+		MessageBox( NULL, "Could not get aMaterialSystem", "Synthia", MB_OK);
+		
+		return 0;
+	}
+
+	MessageBox(NULL, "hi", "hi", MB_OK);
+
+	ConVar_Register(0);
+
+	
+	OldSpew = GetSpewOutputFunc();
+	SpewOutputFunc(NewSpew);
+
+	AllocConsole();
+
+	hOut = GetStdHandle( STD_OUTPUT_HANDLE );
+	hIn = GetStdHandle( STD_INPUT_HANDLE );
+	oldcp = GetConsoleOutputCP();
+	SetConsoleOutputCP(CP_UTF8);
+
+	char str [20000];
+	str[0] = 80;
+
+	SetConsoleTitle( "Synthia Console" );
+	
+	WriteInConsole("Initialized Synthia.\n");
+	WriteInConsole("m_pInput: [0x%x]\n", g_pInput );
+	WriteInConsole("Spoof prefix: _%s_ \n", cvarspoofprefix);
+	
+	Synthia_ConVar( "sv_cheats" );
+	Synthia_ConVar( "r_drawothermodels" );
+	Synthia_ConVar( "mat_fullbright" );
+	Synthia_ConVar( "host_timescale" );
+
+	while (str != "exit")
+	{
+
+		cgets(str);
+		
+		string nstr = &str[2];
+
+		if ( nstr == "" || nstr == " " )
+			continue;
+
+		if ( nstr == "clear" )
+		{
+			system("cls"); //gotta find a better way
+		}
+
+		string parsing[999] = { "a", "b" };
+
+		char astr[] = "";
+		char* pch = strtok(str, " ");
+
+		int tmpval = 0;
+
+		while (pch != NULL) {
+			parsing[tmpval] = pch;
+
+			tmpval = tmpval + 1;
+
+			pch = strtok(NULL, " ");
+		}
+
+		if ( strstr(parsing[0].c_str(), "sa_") )
+		{
+			if ( strstr(parsing[0].c_str(), "sa_about") )
+			{
+				Synthia_About();
+				continue;
+			}
+
+			if ( strstr(parsing[0].c_str(), "sa_convar") )
+			{
+				Synthia_ConVar( parsing[1].c_str() );
+
+				WriteInConsole("[Synthia] Spoofed %s sucessfully !", parsing[1].c_str() );
+
+				continue;
+			}
+
+			if ( strstr(parsing[0].c_str(), "sa_name") )
+			{
+				string nnstr = nstr;
+				nnstr.erase(0, 7);
+
+				Synthia_Name( nnstr.c_str() );
+
+				WriteInConsole("[Synthia] Changed name to: %s", nnstr.c_str() );
+				continue;
+			}
+
+			if ( strstr(parsing[0].c_str(), "sa_disconnect") )
+			{
+				string nnstr = nstr;
+				nnstr.erase(0, 13);
+
+				Synthia_Disconnect( nnstr.c_str() );
+
+				WriteInConsole("[Synthia] Disconnected with message: %s", nnstr.c_str() );
+				WriteInConsole( "\n" );
+				continue;
+			}
+
+			if ( strstr(parsing[0].c_str(), "sa_wallhack") )
+			{
+
+				Synthia_Wallhack();
+
+				WriteInConsole("[Synthia] Toggled Wallhack !");
+				WriteInConsole( "\n" );
+				continue;
+			}
+
+			if ( strstr(parsing[0].c_str(), "sa_bhop") )
+			{
+				Bhop = !Bhop;
+
+				if ( Bhop )
+				{
+					WriteInConsole("[Synthia] Enabled Bunny Hop !");
+					WriteInConsole( "\n" );
+					continue;
+				}
+
+				WriteInConsole("[Synthia] Disabled Bunny Hop !");
+				WriteInConsole( "\n" );
+				continue;
+			}
+
+			if ( strstr(parsing[0].c_str(), "sa_speed") )
+			{
+				char gay[9999] = "";
+
+				strcpy(gay, parsing[1].c_str());
+				Synthia_Speedhack( atoi(gay) );
+				WriteInConsole( "\n" );
+
+				continue;
+			}
+
+			WriteInConsole( "Invalid command !\nType sa_about if you want to learn about my commands.\n" ); 
+			WriteInConsole( "\n" );
+
+			continue;
+		}
+
+		enginecl->ClientCmd_Unrestricted(nstr.c_str());
+	}
+
+	return 0;
+
+}
+
+
+int __stdcall nInitShit( CreateInterfaceFn appSysFactory, CreateInterfaceFn physicsFactory, CGlobalVarsBase* pGlobals, IGet *sth )
+{
+	g_pClientHook->UnHook();
+	int ret = gClient.Init( appSysFactory, physicsFactory, pGlobals, sth );
+	g_pClientHook->ReHook();
+
+	g_AppSysFactory = appSysFactory;
+	g_pGlobals = pGlobals;
+	gGet = sth;
+
+	return ret;
+}
+
+int Initialize( )
+{
+	HMODULE hModuleClient = NULL;
+
+	while(!GetModuleHandle("client.dll"))
+	{
+		Sleep(100);
+	}
+
+	hModuleClient = GetModuleHandle("client.dll");
+
+	CreateInterfaceFn ClientFactory	= (CreateInterfaceFn)GetProcAddress(hModuleClient, "CreateInterface");
+
+	if( !ClientFactory )
+	{
+		MessageBox(NULL, "Could not get a factory !", "Synthia", MB_OK);
+
+		return 0;
+	}
+
+	while( !ClientFactory( "VClient017", NULL ) )
+		Sleep(10);
+
+	PDWORD* m_pdwClient = ( PDWORD* ) ClientFactory( "VClient017", NULL );
+	RtlCopyMemory( ( void* )&gClient,( void* )*m_pdwClient , sizeof ( CClient ) );
+
+	g_pClientHook = new CVMTHookManager( m_pdwClient );
+	g_pClientHook->dwHookMethod( ( DWORD )nInitShit, 0 );
+	//g_pClientHook->dwHookMethod( ( DWORD )nCreateMove, 21 );
+	//g_pClientHook->dwHookMethod( ( DWORD )nDrawModel, 2 );
+	/* initialization that you need to do somewhere */
+
+	srand( time( NULL ) );
+	cvarspoofprefix = randomString( 5 );
+
+	InitializeL();
+
+	return 0;
+
+}
+
+DWORD WINAPI hookthread( LPVOID Param )
+{
+
+	Initialize();
+
+	return 0;
+}
+
+BOOL WINAPI DllMain( HMODULE hModule, DWORD reason, LPVOID lpReserved )
+{
+
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        DisableThreadLibraryCalls(hModule);
+        CreateThread(NULL, NULL, hookthread, NULL, NULL, NULL);
+        return 1;
+    }
+
+    if (reason == DLL_PROCESS_DETACH)
+    {
+		SetConsoleOutputCP(oldcp);
+        return 1;
+    }
+
+    return 0;
+}
